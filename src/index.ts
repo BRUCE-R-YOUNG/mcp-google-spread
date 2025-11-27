@@ -1,12 +1,12 @@
+// src/index.ts
 import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// プロジェクト直下の .env を明示パスで読む（Claudeがどのcwdで起動してもOK）
+// プロジェクト直下の .env を明示パスで読む
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
-// src/index.ts
 import { google } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -17,23 +17,24 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 /**
- * 環境変数からOAuth2クライアントを初期化
- * - 事前に発行した refresh_token を使ってサーバ側で無人リフレッシュ
- * - 取得方法はREADME参照（Playground など）
+ * 環境変数読み出し（必須チェック付き）
  */
-
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env ${name}`);
   return v;
 }
 
-
+/**
+ * OAuth2 クライアント生成
+ * - Calendar の時と同じく refresh_token で無人リフレッシュ
+ */
 function getOAuthClient(): OAuth2Client {
-  const GOOGLE_CLIENT_ID     = requireEnv("GOOGLE_CLIENT_ID");
+  const GOOGLE_CLIENT_ID = requireEnv("GOOGLE_CLIENT_ID");
   const GOOGLE_CLIENT_SECRET = requireEnv("GOOGLE_CLIENT_SECRET");
   const GOOGLE_REFRESH_TOKEN = requireEnv("GOOGLE_REFRESH_TOKEN");
-  const GOOGLE_REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI || "http://localhost";
+  const GOOGLE_REDIRECT_URI =
+    process.env.GOOGLE_REDIRECT_URI || "http://localhost";
 
   const oAuth2Client = new google.auth.OAuth2(
     GOOGLE_CLIENT_ID,
@@ -44,122 +45,140 @@ function getOAuthClient(): OAuth2Client {
   return oAuth2Client;
 }
 
-
+/**
+ * 起動時に環境変数マスク表示（デバッグ用）
+ */
 function previewEnv() {
-  const mask = (s?: string) => (s ? `${s.slice(0,4)}…(${s.length})` : "(none)");
-  console.error("[ENV CHECK]",
-    "CLIENT_ID:", mask(process.env.GOOGLE_CLIENT_ID),
-    "SECRET:", mask(process.env.GOOGLE_CLIENT_SECRET),
-    "REFRESH:", mask(process.env.GOOGLE_REFRESH_TOKEN),
-    "REDIRECT:", process.env.GOOGLE_REDIRECT_URI);
+  const mask = (s?: string) => (s ? `${s.slice(0, 4)}…(${s.length})` : "(none)");
+  console.error(
+    "[ENV CHECK]",
+    "CLIENT_ID:",
+    mask(process.env.GOOGLE_CLIENT_ID),
+    "SECRET:",
+    mask(process.env.GOOGLE_CLIENT_SECRET),
+    "REFRESH:",
+    mask(process.env.GOOGLE_REFRESH_TOKEN),
+    "REDIRECT:",
+    process.env.GOOGLE_REDIRECT_URI
+  );
 }
 previewEnv();
 
-
 /**
- * Google Calendar から予定を取得
+ * Google Spreadsheet から値を取得
+ * - spreadsheets.values.get の薄いラッパ
  */
-async function fetchCalendarEvents(args: {
-  calendarId?: string;
-  timeMin?: string; // ISO8601 (e.g. 2025-10-20T00:00:00+09:00)
-  timeMax?: string; // ISO8601
-  maxResults?: number;
-  singleEvents?: boolean;
-  orderBy?: "startTime" | "updated";
-  q?: string; // フリーテキスト検索（任意）
+async function fetchSpreadsheetValues(args: {
+  spreadsheetId: string;
+  range: string; // A1表記 (例: "シート1!A2:D100")
+  majorDimension?: "ROWS" | "COLUMNS";
+  valueRenderOption?:
+    | "FORMATTED_VALUE"
+    | "UNFORMATTED_VALUE"
+    | "FORMULA";
+  dateTimeRenderOption?:
+    | "SERIAL_NUMBER"
+    | "FORMATTED_STRING";
 }) {
   const auth = getOAuthClient();
-  const calendar = google.calendar({ version: "v3", auth });
+  const sheets = google.sheets({ version: "v4", auth });
 
   const {
-    calendarId = "primary",
-    timeMin,
-    timeMax,
-    maxResults = 100,
-    singleEvents = true,
-    orderBy = "startTime",
-    q,
-  } = args || {};
+    spreadsheetId,
+    range,
+    majorDimension,
+    valueRenderOption,
+    dateTimeRenderOption,
+  } = args;
 
-  const res = await calendar.events.list({
-    calendarId,
-    timeMin,
-    timeMax,
-    maxResults,
-    singleEvents,
-    orderBy,
-    q,
+  if (!spreadsheetId) {
+    throw new Error("spreadsheetId is required");
+  }
+  if (!range) {
+    throw new Error("range is required (A1 notation)");
+  }
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range,
+    majorDimension,
+    valueRenderOption,
+    dateTimeRenderOption,
   });
 
   return res.data;
 }
 
-// ---------------- MCP Server ----------------
+// -------------- MCP Server 本体 --------------
 
 const server = new Server(
-  { name: "sensor-mcp", version: "1.0.0" }, // 既存名を踏襲（binも同じ）
+  { name: "spreadsheet-mcp", version: "1.0.0" },
   { capabilities: { tools: {} } }
 );
 
-// 利用可能なツール一覧
+/**
+ * 利用可能なツール一覧
+ * - Google Spreadsheet から値を取得するツールを1つ公開
+ */
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: "get_calendar_events",
+        name: "get_spreadsheet_values",
         description:
-          "Googleカレンダーから予定を取得します。timeMin/timeMaxはISO8601（例: 2025-10-20T00:00:00+09:00）",
+          "Googleスプレッドシートから指定レンジの値を取得します（spreadsheets.values.get）。",
         inputSchema: {
           type: "object",
           properties: {
-            calendarId: {
+            spreadsheetId: {
               type: "string",
-              description: "カレンダーID（未指定なら primary）",
+              description: "スプレッドシートID（URL中の /spreadsheets/d/ の後の部分）",
             },
-            timeMin: {
+            range: {
               type: "string",
-              description: "開始時刻（ISO8601）。未指定可",
+              description:
+                'A1表記のレンジ（例: "シート1!A2:D100"）。シート名なしならアクティブシートのレンジ。',
             },
-            timeMax: {
+            majorDimension: {
               type: "string",
-              description: "終了時刻（ISO8601）。未指定可",
+              enum: ["ROWS", "COLUMNS"],
+              description:
+                "値の配列の次元。デフォルトは ROWS（行単位）",
             },
-            maxResults: {
-              type: "number",
-              description: "最大件数（デフォルト100）",
-            },
-            singleEvents: {
-              type: "boolean",
-              description: "繰り返し予定を展開するか（デフォルトtrue）",
-            },
-            orderBy: {
+            valueRenderOption: {
               type: "string",
-              enum: ["startTime", "updated"],
-              description: "並び順（デフォルトstartTime）",
+              enum: ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"],
+              description:
+                "値の表示方法。デフォルト FORMATTED_VALUE（表示形式適用済みの値）",
             },
-            q: {
+            dateTimeRenderOption: {
               type: "string",
-              description: "フリーテキスト検索（任意）",
+              enum: ["SERIAL_NUMBER", "FORMATTED_STRING"],
+              description:
+                "日付・時刻の表現方法。デフォルトはロケールに応じた文字列。",
             },
           },
+          required: ["spreadsheetId", "range"],
         },
       },
     ],
   };
 });
 
-// ツール呼び出し
+/**
+ * ツール呼び出し処理
+ */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  if (request.params.name !== "get_calendar_events") {
+  if (request.params.name !== "get_spreadsheet_values") {
     throw new Error("Unknown tool");
   }
 
   try {
-    const data = await fetchCalendarEvents(
+    const data = await fetchSpreadsheetValues(
       (request.params.arguments as any) || {}
     );
 
-    // Claudeに扱いやすいよう JSON文字列で返す
+    // Claude が扱いやすいよう JSON 文字列で返す
     return {
       content: [
         {
@@ -173,7 +192,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: "text",
-          text: `Calendar fetch failed: ${err?.message ?? String(err)}`,
+          text: `Spreadsheet fetch failed: ${err?.message ?? String(err)}`,
         },
       ],
       isError: true,
@@ -181,10 +200,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+/**
+ * 標準入出力で MCP サーバとして起動
+ */
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("sensor-mcp (Google Calendar) running over stdio");
+  console.error("spreadsheet-mcp (Google Sheets) running over stdio");
 }
 
 main().catch((error) => {

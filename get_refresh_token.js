@@ -21,7 +21,7 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
 const oauth2 = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
 const scopes = [
-  'https://www.googleapis.com/auth/spread.readonly'
+  'https://www.googleapis.com/auth/spreadsheets.readonly'
 ];
 
 const authUrl = oauth2.generateAuthUrl({

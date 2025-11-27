@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "Spreadsheet-mcp": {
+      "command": "node",
+      "args": [
+          "C:\\dev\\mcp-google-spread\\build\\index.js"
+      ]
+    }
+  }
+}
