@@ -1,11 +1,11 @@
 {
-  "name": "schedule-mcp",
+  "name": "spreadsheet-mcp",
   "version": "1.0.0",
   "description": "Google Spreadsheet MCP server",
   "type": "module",
   "main": "build/index.js",
   "bin": {
-    "schedule-mcp": "./build/index.js"
+    "spreadsheet-mcp": "./build/index.js"
   },
   "files": [
     "build"
