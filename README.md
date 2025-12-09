@@ -1,3 +1,4 @@
+```json
 {
   "mcpServers": {
     "sensor-mcp": {
@@ -6,3 +7,4 @@
     }
   }
 }
+```
